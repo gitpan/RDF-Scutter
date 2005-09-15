@@ -1,5 +1,11 @@
 Revision history for Perl extension RDF::Scutter.
 
+2005-09-15  Kjetil Kjernsmo  <kjetil@kjernsmo.net>
+
+	* 0.02: Quoting the Redland version to make packaging right.
+	* Add SIGNATURE
+
+
 2005-09-14  Kjetil Kjernsmo  <kjetil@kjernsmo.net>
 
 	* 0.01: Initial release

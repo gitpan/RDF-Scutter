@@ -6,7 +6,7 @@ WriteMakefile(
     NAME              => 'RDF::Scutter',
     VERSION_FROM      => 'lib/RDF/Scutter.pm', # finds $VERSION
     PREREQ_PM         => {
-	'RDF::Redland' => 1.0.2.1,
+	'RDF::Redland' => '1.0.2.1',
 	'LWP::RobotUA' => 0,
     }, # e.g., Module::Name => 1.1
     ($] >= 5.005 ?     ## Add these new keywords supported since 5.005
