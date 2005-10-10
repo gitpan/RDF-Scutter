@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.02';
+our $VERSION = '0.03';
 
 use base ('LWP::RobotUA');
 
@@ -21,7 +21,9 @@ sub new {
   }
   croak "Setting an e-mail address using the 'from' parameter is required" unless ($params{from});
   my $self = $class->SUPER::new(%params);
-  $self->{QUEUE} = $scutterplan;
+  foreach my $url (@{$scutterplan}) {
+    $self->{QUEUE}->{$url} = ''; # Internally, QUEUE holds a hash where the keys are URLs to be visited and values are the URL they were referenced from.
+  }
   $self->{VISITED} = {};
 
   bless($self, $class);
@@ -35,16 +37,22 @@ sub scutter {
   croak "Failed to create RDF::Redland::Model for storage\n" unless $model;
 
   my $count = 0;
-  foreach my $url (@{$self->{QUEUE}}) {
+  while (my ($url, $referer) = each(%{$self->{QUEUE}})) {
     local $SIG{TERM} = sub { $model->sync; };
     next if ($self->{VISITED}->{$url}); # Then, we've been there in this run
 #    LWP::Debug::debug('Retrieving ' . $url);
     $count++;
     print STDERR "No: $count, Retrieving $url\n";
-    my $response = $self->get($url);
+    my $response = $self->get($url, 'Referer' => $referer);
     if ($response->is_success) {
-      $self->{VISITED}->{$url} = 1; # Been there, done that, one teeshirt is sufficient
+      my $fetchtime = $response->header('Date');
+      unless ($fetchtime) {
+	$fetchtime = localtime;
+      }
+      $self->{VISITED}->{$url} = 1;  # Been there, done that,
+      delete $self->{QUEUE}->{$url}; # one teeshirt is sufficient
       my $uri = new RDF::Redland::URI($url);
+      my $context=new RDF::Redland::BlankNode('context'.$count);
       my $parser=new RDF::Redland::Parser;
       unless ($parser) {
 	LWP::Debug::debug('Skipping ' . $url);
@@ -60,17 +68,51 @@ sub scutter {
       }
 
       # Now build a temporary model for this resource
-      my $tmpstorage=new RDF::Redland::Storage("memory", "tmpstore", "new='yes'");
+      my $tmpstorage=new RDF::Redland::Storage("memory", "tmpstore", "new='yes',contexts='yes'");
       my $thismodel = new RDF::Redland::Model($tmpstorage, "");
       while($thisdoc && !$thisdoc->end) { # Add the statements to both models
 	my $statement=$thisdoc->current;
-	$model->add_statement($statement);
-	$thismodel->add_statement($statement);
+	$model->add_statement($statement,$context);
+	$thismodel->add_statement($statement,$context);
+
 	$thisdoc->next;
       }
 
+      # Now, statements about the contexts
+      $model->add_statement($context,  
+			    new RDF::Redland::URINode('http://purl.org/net/scutter#source'), 
+			    $uri);
+      if ($referer) {
+	$model->add_statement($context,
+			      new RDF::Redland::URINode('http://purl.org/net/scutter#origin'), 
+			      new RDF::Redland::URINode($referer));
+      }
+      my $fetch=new RDF::Redland::BlankNode('fetch'.$count); # It is actually unique to this run, but will have to change later
+      $model->add_statement($context,
+			    new RDF::Redland::URINode('http://purl.org/net/scutter#fetch'), 
+			    $fetch);
+      $model->add_statement($fetch,
+			    new RDF::Redland::URINode('http://purl.org/dc/elements/1.1/date'), 
+			    new RDF::Redland::LiteralNode($fetchtime));
+      $model->add_statement($fetch,
+			    new RDF::Redland::URINode('http://purl.org/net/scutter#status'), 
+			    new RDF::Redland::LiteralNode($response->code));
+      $model->add_statement($fetch,
+			    new RDF::Redland::URINode('http://purl.org/net/scutter#raw_triple_count'), 
+			    new RDF::Redland::LiteralNode($thismodel->size));
+      if ($response->header('ETag')) {
+	$model->add_statement($fetch,
+			      new RDF::Redland::URINode('http://purl.org/net/scutter#etag'), 
+			      new RDF::Redland::LiteralNode($response->header('ETag')));
+      }
+      if ($response->header('Last-Modified')) {
+	$model->add_statement($fetch,
+			      new RDF::Redland::URINode('http://purl.org/net/scutter#last_modified'), 
+			      new RDF::Redland::LiteralNode($response->header('Last-Modified')));
+      }
+
+
       my $query=new RDF::Redland::Query('SELECT DISTINCT ?doc WHERE { [ <http://www.w3.org/2000/01/rdf-schema#seeAlso> ?doc ] }', undef, undef, "sparql");
-#      my $query=new RDF::Redland::Query('SELECT ?x ?y ?z WHERE { ?x ?y ?z . }', undef, undef, "sparql");
 
       my $results=$query->execute($thismodel);
 
@@ -79,9 +121,10 @@ sub scutter {
 	  my $value=$results->binding_value($i);
 	  my $foundurl = $value->uri->as_string;
 	  unless ($self->{VISITED}->{$foundurl}) {
-	    push(@{$self->{QUEUE}}, $foundurl);
+	    $self->{QUEUE}->{$foundurl} = $url;
 	    print STDERR "Adding URL: " . $foundurl ."\n";
 	  } else {
+	    delete $self->{QUEUE}->{$foundurl};
 	    LWP::Debug::debug('Has been visited, so skipping ' . $foundurl);
 	  }
 	}
@@ -112,7 +155,7 @@ RDF::Scutter - Perl extension for harvesting distributed RDF resources
   use RDF::Redland;
   my $scutter = RDF::Scutter->new(scutterplan => ['http://www.kjetil.kjernsmo.net/foaf.rdf','http://my.opera.com/kjetilk/xml/foaf/'], from => 'scutterer@example.invalid');
 
-  my $storage=new RDF::Redland::Storage("hashes", "rdfscutter", "new='yes',hash-type='bdb',dir='/tmp/'");
+  my $storage=new RDF::Redland::Storage("hashes", "rdfscutter", "new='yes',hash-type='bdb',dir='/tmp/',contexts='yes'");
   my $model = $scutter->scutter($storage, 30);
   my $serializer=new RDF::Redland::Serializer("ntriples");
   print $serializer->serialize_model_to_string(undef,$model);
@@ -127,7 +170,10 @@ RDF statements.
 
 This module is an alpha release of such a Scutter. It builds a
 L<RDF::Redland::Model>, and can add statements to any
-L<RDF::Redland::Storage> (file, memory, Berkeley DB, MySQL, etc).
+L<RDF::Redland::Storage> that supports contexts. Among Redland
+storages, we find file, memory, Berkeley DB, MySQL, etc, but it is not
+clear to the author which of these supports contexts, and indeed, it
+does seem like the synopsis example doesn't work.
 
 This class inherits from L<LWP::RobotUA>, which again is a
 L<LWP::UserAgent> and can therefore use all methods of these classes.
@@ -135,6 +181,8 @@ L<LWP::UserAgent> and can therefore use all methods of these classes.
 The latter implies it is robot that by default behaves nicely, it
 checks C<robots.txt>, and sleeps between connections to make sure it
 doesn't overload remote servers.
+
+It implements much of the ScutterVocab at http://rdfweb.org/topic/ScutterVocab
 
 =head1 CAUTION
 
@@ -177,8 +225,8 @@ There are no known real bugs at the time of this writing, keeping in
 mind it is an alpha. If you find any, please use the CPAN Request
 Tracker to report them.
 
-The code that loops to retrieve the URLs are not very elegant, and
-will undergo revision in later releases.
+I'm in it slightly over my head when I try to add the ScutterVocab
+statements. Time will show if I have understood it correctly.
 
 Allthough it uses L<LWP::Debug> to debugging, the author feels it is
 somewhat problematic to find the right amount of output from the
@@ -195,6 +243,9 @@ if set to retrieve as much as it could. Currently, it is a serial
 robot, but there exists Perl modules to make parallell robots. If it
 is found that a serial robot is too limited, it will necessarily
 require attention.
+
+It does not yet give a reason for skipping a resource that fails to be
+fetched or parse.
 
 =head1 SEE ALSO
 
