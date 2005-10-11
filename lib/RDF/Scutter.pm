@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.03';
+our $VERSION = '0.04';
 
 use base ('LWP::RobotUA');
 
@@ -42,21 +42,50 @@ sub scutter {
     next if ($self->{VISITED}->{$url}); # Then, we've been there in this run
 #    LWP::Debug::debug('Retrieving ' . $url);
     $count++;
+    my $uri = new RDF::Redland::URI($url);
+    my $context=new RDF::Redland::BlankNode('context'.$count);
+    my $fetch=new RDF::Redland::BlankNode('fetch'.$count); # It is actually unique to this run, but will have to change later
+
+
     print STDERR "No: $count, Retrieving $url\n";
     my $response = $self->get($url, 'Referer' => $referer);
+
+
+    my $fetchtime = $response->header('Date');
+    unless ($fetchtime) {
+      $fetchtime = localtime;
+    }
+    # Now, statements about the contexts
+    $model->add_statement($context,  
+			  new RDF::Redland::URINode('http://purl.org/net/scutter#source'), 
+			  $uri, $context);
+    if ($referer) {
+      $model->add_statement($context,
+			    new RDF::Redland::URINode('http://purl.org/net/scutter#origin'), 
+			    new RDF::Redland::URINode($referer), $context);
+    }
+    
+    $model->add_statement($context,
+			  new RDF::Redland::URINode('http://purl.org/net/scutter#fetch'), 
+			  $fetch, $context);
+    $model->add_statement($fetch,
+			  new RDF::Redland::URINode('http://purl.org/dc/elements/1.1/date'), 
+			  new RDF::Redland::LiteralNode($fetchtime), $context);
+    $model->add_statement($fetch,
+			  new RDF::Redland::URINode('http://purl.org/net/scutter#status'), 
+			  new RDF::Redland::LiteralNode($response->code), $context);
     if ($response->is_success) {
-      my $fetchtime = $response->header('Date');
-      unless ($fetchtime) {
-	$fetchtime = localtime;
-      }
       $self->{VISITED}->{$url} = 1;  # Been there, done that,
       delete $self->{QUEUE}->{$url}; # one teeshirt is sufficient
-      my $uri = new RDF::Redland::URI($url);
-      my $context=new RDF::Redland::BlankNode('context'.$count);
       my $parser=new RDF::Redland::Parser;
       unless ($parser) {
 	LWP::Debug::debug('Skipping ' . $url);
 	LWP::Debug::debug('Could not create parser for MIME type '.$response->header('Content-Type'));
+	$model = $self->_error_statements(model => $model,
+					  fetch => $fetch,
+					  count => $count,
+					  context => $context,
+					  message => 'Could not create Redland parser for MIME type '.$response->header('Content-Type'));
 	next;
       }
       my $thisdoc = $parser->parse_string_as_stream($response->decoded_content, $uri);
@@ -64,6 +93,11 @@ sub scutter {
 	LWP::Debug::debug('Skipping ' . $url);
 	LWP::Debug::debug('Parser returned no content.');
 	LWP::Debug::conns($response->decoded_content);
+	$model = $self->_error_statements(model => $model,
+					  fetch => $fetch,
+					  count => $count,
+					  context => $context,
+					  message => 'Redland parser returned no content.');
 	next;
       }
 
@@ -78,37 +112,19 @@ sub scutter {
 	$thisdoc->next;
       }
 
-      # Now, statements about the contexts
-      $model->add_statement($context,  
-			    new RDF::Redland::URINode('http://purl.org/net/scutter#source'), 
-			    $uri);
-      if ($referer) {
-	$model->add_statement($context,
-			      new RDF::Redland::URINode('http://purl.org/net/scutter#origin'), 
-			      new RDF::Redland::URINode($referer));
-      }
-      my $fetch=new RDF::Redland::BlankNode('fetch'.$count); # It is actually unique to this run, but will have to change later
-      $model->add_statement($context,
-			    new RDF::Redland::URINode('http://purl.org/net/scutter#fetch'), 
-			    $fetch);
-      $model->add_statement($fetch,
-			    new RDF::Redland::URINode('http://purl.org/dc/elements/1.1/date'), 
-			    new RDF::Redland::LiteralNode($fetchtime));
-      $model->add_statement($fetch,
-			    new RDF::Redland::URINode('http://purl.org/net/scutter#status'), 
-			    new RDF::Redland::LiteralNode($response->code));
+      # More about the fetch
       $model->add_statement($fetch,
 			    new RDF::Redland::URINode('http://purl.org/net/scutter#raw_triple_count'), 
-			    new RDF::Redland::LiteralNode($thismodel->size));
+			    new RDF::Redland::LiteralNode($thismodel->size), $context);
       if ($response->header('ETag')) {
 	$model->add_statement($fetch,
 			      new RDF::Redland::URINode('http://purl.org/net/scutter#etag'), 
-			      new RDF::Redland::LiteralNode($response->header('ETag')));
+			      new RDF::Redland::LiteralNode($response->header('ETag')), $context);
       }
       if ($response->header('Last-Modified')) {
 	$model->add_statement($fetch,
 			      new RDF::Redland::URINode('http://purl.org/net/scutter#last_modified'), 
-			      new RDF::Redland::LiteralNode($response->header('Last-Modified')));
+			      new RDF::Redland::LiteralNode($response->header('Last-Modified')), $context);
       }
 
 
@@ -135,10 +151,31 @@ sub scutter {
  #     print $serializer->serialize_model_to_string(undef,$model);
  #     $model->sync; # Finally, make sure this is saved to the storage 
       last if ($maxcount == $count);   
+    } else { # Error situation, retrieval not OK
+      $model = $self->_error_statements(model => $model,
+					fetch => $fetch,
+					count => $count,
+					context => $context,
+					message => 'HTTP Error. Message: '.$response->message);
     }
+
   }
   return $model;
 }
+
+sub _error_statements {
+  my ($self, %msg) = @_;
+  my $reason=new RDF::Redland::BlankNode('reason'.$msg{count});
+  my $model = $msg{model};
+  $model->add_statement($msg{fetch},
+			new RDF::Redland::URINode('http://purl.org/net/scutter#error'), 
+			$reason, $msg{context});
+  $model->add_statement($reason,
+			new RDF::Redland::URINode('http://purl.org/dc/elements/1.1/description'), 
+			new RDF::Redland::LiteralNode($msg{message}), $msg{context});
+  return $model;
+}
+
 
 
 1;
@@ -182,7 +219,7 @@ The latter implies it is robot that by default behaves nicely, it
 checks C<robots.txt>, and sleeps between connections to make sure it
 doesn't overload remote servers.
 
-It implements much of the ScutterVocab at http://rdfweb.org/topic/ScutterVocab
+It implements most of the ScutterVocab at http://rdfweb.org/topic/ScutterVocab
 
 =head1 CAUTION
 
@@ -236,16 +273,15 @@ present release, however.
 For an initial release, heeding C<robots.txt> is actually pretty
 groundbreaking. However, a good robot should also make use of HTTP
 caching, keywords are Etags, Last-Modified and Expiry. It will be a
-focus of upcoming development.
+focus of upcoming development, and many of these things are now being
+stated about the context in the RDF. We should find a way to detect
+what is being skipped due to C<robots.txt> though.
 
 It is not clear how long it would be running, or how it would perform
 if set to retrieve as much as it could. Currently, it is a serial
 robot, but there exists Perl modules to make parallell robots. If it
 is found that a serial robot is too limited, it will necessarily
 require attention.
-
-It does not yet give a reason for skipping a resource that fails to be
-fetched or parse.
 
 =head1 SEE ALSO
 

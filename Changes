@@ -1,5 +1,19 @@
 Revision history for Perl extension RDF::Scutter.
 
+2005-10-12  Kjetil Kjernsmo  <kjetil@kjernsmo.net>
+
+	* 0.04: 
+	  - Reordering the addition of the ScutterVocab stuff.
+	  - More error support in the output RDF.
+	  - Had forgotten to add the actual context nodes many places.
+
+2005-10-11  Kjetil Kjernsmo  <kjetil@kjernsmo.net>
+
+	* 0.03: 
+	  - First stab at Redland contexts and ScutterVocab
+	  - Reworked the algorithm a bit to make it rely less in 
+	    VISITED and add Referer header
+	
 2005-09-15  Kjetil Kjernsmo  <kjetil@kjernsmo.net>
 
 	* 0.02: Quoting the Redland version to make packaging right.

@@ -1,4 +1,4 @@
-RDF-Scutter version 0.02
+RDF-Scutter version 0.04
 ========================
 
 As the name implies, this is an RDF Scutter. A scutter is a web robot
@@ -10,8 +10,13 @@ It is a LWP::RobotUA, inheriting all the abilities of that class,
 including the ability to be nice to remote servers, heeding robots.txt
 and so on. Also, it uses the excellent and widespread RDF::Redland
 library and builds a Model, which again can be used by other tools. It
-can store the retrieved data in any store supported by Redland, file,
-memory, Berkeley DB, MySQL, etc.
+can store the retrieved data in any store that can do contexts that is
+supported by Redland, file, memory, Berkeley DB, MySQL, etc.
+
+It supports most of http://rdfweb.org/topic/ScutterVocab and adds such
+statements to the model. For now, it is pretty much a single-run
+robot, as a second run will just start over.
+
 
 INSTALLATION
 
