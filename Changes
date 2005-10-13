@@ -1,5 +1,10 @@
 Revision history for Perl extension RDF::Scutter.
 
+2005-10-14  Kjetil Kjernsmo  <kjetil@kjernsmo.net>
+
+	* 0.06:
+	  - Minor documentation bugs.
+	
 2005-10-13  Kjetil Kjernsmo  <kjetil@kjernsmo.net>
 
 	* 0.05:

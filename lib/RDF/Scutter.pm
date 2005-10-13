@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.05';
+our $VERSION = '0.06';
 
 use base ('LWP::RobotUA');
 
@@ -216,7 +216,9 @@ RDF::Scutter - Perl extension for harvesting distributed RDF resources
 
   use RDF::Scutter;
   use RDF::Redland;
-  my $scutter = RDF::Scutter->new(scutterplan => ['http://www.kjetil.kjernsmo.net/foaf.rdf','http://my.opera.com/kjetilk/xml/foaf/'], from => 'scutterer@example.invalid');
+  my $scutter = RDF::Scutter->new(scutterplan => ['http://www.kjetil.kjernsmo.net/foaf.rdf',
+                                                  'http://my.opera.com/kjetilk/xml/foaf/'],
+                                  from => 'scutterer@example.invalid');
 
   my $storage=new RDF::Redland::Storage("hashes", "rdfscutter", "new='yes',hash-type='bdb',dir='/tmp/',contexts='yes'");
   my $model = $scutter->scutter($storage, 30);
@@ -300,14 +302,17 @@ For an initial release, heeding C<robots.txt> is actually pretty
 groundbreaking. However, a good robot should also make use of HTTP
 caching, keywords are Etags, Last-Modified and Expiry. It will be a
 focus of upcoming development, and many of these things are now being
-stated about the context in the RDF. We should find a way to detect
-what is being skipped due to C<robots.txt> though.
+stated about the context in the RDF.
 
 It is not clear how long it would be running, or how it would perform
 if set to retrieve as much as it could. Currently, it is a serial
 robot, but there exists Perl modules to make parallell robots. If it
 is found that a serial robot is too limited, it will necessarily
 require attention.
+
+One of these days, it seems like I will have to make a full HTTP
+headers vocabulary...
+
 
 =head1 SEE ALSO
 
