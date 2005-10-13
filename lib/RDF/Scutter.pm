@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.04';
+our $VERSION = '0.05';
 
 use base ('LWP::RobotUA');
 
@@ -45,7 +45,34 @@ sub scutter {
     my $uri = new RDF::Redland::URI($url);
     my $context=new RDF::Redland::BlankNode('context'.$count);
     my $fetch=new RDF::Redland::BlankNode('fetch'.$count); # It is actually unique to this run, but will have to change later
+    my $rdftype = new RDF::Redland::URI('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
 
+    
+    # Now, statements about the contexts
+    $model->add_statement($context,  
+			  $rdftype,
+			  new RDF::Redland::URINode('http://purl.org/net/scutter#Context'), $context);
+    $model->add_statement($context,  
+			  new RDF::Redland::URINode('http://purl.org/net/scutter#source'), 
+			  $uri, $context);
+
+    if ($referer) {
+      $model->add_statement($context,
+			    new RDF::Redland::URINode('http://purl.org/net/scutter#origin'), 
+			    new RDF::Redland::URINode($referer), $context);
+    }
+
+    unless ($self->rules->allowed($url)) {
+      LWP::Debug::debug('Skipping ' . $url);
+      LWP::Debug::debug('Disallowed as per robots.txt');
+      $model = $self->_error_statements(model => $model,
+					fetch => $fetch,
+					count => $count,
+					context => $context,
+					rel => 'skip',
+					message => 'Disallowed as per robots.txt');
+      next;
+    }
 
     print STDERR "No: $count, Retrieving $url\n";
     my $response = $self->get($url, 'Referer' => $referer);
@@ -55,19 +82,14 @@ sub scutter {
     unless ($fetchtime) {
       $fetchtime = localtime;
     }
-    # Now, statements about the contexts
-    $model->add_statement($context,  
-			  new RDF::Redland::URINode('http://purl.org/net/scutter#source'), 
-			  $uri, $context);
-    if ($referer) {
-      $model->add_statement($context,
-			    new RDF::Redland::URINode('http://purl.org/net/scutter#origin'), 
-			    new RDF::Redland::URINode($referer), $context);
-    }
     
+    # More statements about the fetch we just did.
     $model->add_statement($context,
 			  new RDF::Redland::URINode('http://purl.org/net/scutter#fetch'), 
 			  $fetch, $context);
+    $model->add_statement($fetch,
+			  $rdftype, 
+			  new RDF::Redland::URINode('http://purl.org/net/scutter#Fetch'), $context);
     $model->add_statement($fetch,
 			  new RDF::Redland::URINode('http://purl.org/dc/elements/1.1/date'), 
 			  new RDF::Redland::LiteralNode($fetchtime), $context);
@@ -166,10 +188,14 @@ sub scutter {
 sub _error_statements {
   my ($self, %msg) = @_;
   my $reason=new RDF::Redland::BlankNode('reason'.$msg{count});
+  my $rel = $msg{rel} || 'error'; # Error relationship if nothing else is given.
   my $model = $msg{model};
   $model->add_statement($msg{fetch},
-			new RDF::Redland::URINode('http://purl.org/net/scutter#error'), 
+			new RDF::Redland::URINode('http://purl.org/net/scutter#'.$rel), 
 			$reason, $msg{context});
+  $model->add_statement($reason,
+			new RDF::Redland::URI('http://www.w3.org/1999/02/22-rdf-syntax-ns#type'),  
+			new RDF::Redland::URINode('http://purl.org/net/scutter#Reason'), $msg{context});
   $model->add_statement($reason,
 			new RDF::Redland::URINode('http://purl.org/dc/elements/1.1/description'), 
 			new RDF::Redland::LiteralNode($msg{message}), $msg{context});
@@ -249,8 +275,8 @@ This method will launch the Scutter. As first argument, it takes a
 L<RDF::Redland::Storage> object. This allows you to store your model
 any way Redland supports, and it is very flexible, see its
 documentation for details. Optionally, it takes an integer as second
-argument, giving the maximum number of URLs to retrieve. This provides
-some security against a runaway robot.
+argument, giving the maximum number of URLs to retrieve
+successfully. This provides some security against a runaway robot.
 
 It will return a L<RDF::Redland::Model> containing a model with all
 statements retrieved from all visited resources.

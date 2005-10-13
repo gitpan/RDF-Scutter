@@ -1,5 +1,12 @@
 Revision history for Perl extension RDF::Scutter.
 
+2005-10-13  Kjetil Kjernsmo  <kjetil@kjernsmo.net>
+
+	* 0.05:
+	  - Adding the rdf:types of the ScutterVocab to the model.
+	  - Add a skip reason if we find that it is robots.txt that makes
+	    us skip a resource.
+	
 2005-10-12  Kjetil Kjernsmo  <kjetil@kjernsmo.net>
 
 	* 0.04: 
