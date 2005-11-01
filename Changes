@@ -1,5 +1,16 @@
 Revision history for Perl extension RDF::Scutter.
 
+2005-11-01  Kjetil Kjernsmo  <kjetil@kjernsmo.net>
+
+	* 0.1:
+	  - A lot of robustness changes, and more testing.
+	  - It can check if the parse and queries are successful and will
+	    not croak, but add an error instead.
+	  - Skip by regexp, maxcount fixes.
+	  - Checking for redirects and add them to the queue.
+	  - More comments and whitespace.
+
+
 2005-10-14  Kjetil Kjernsmo  <kjetil@kjernsmo.net>
 
 	* 0.06:

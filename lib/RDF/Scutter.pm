@@ -4,7 +4,7 @@ use strict;
 use warnings;
 use Carp;
 
-our $VERSION = '0.06';
+our $VERSION = '0.1';
 
 use base ('LWP::RobotUA');
 
@@ -13,18 +13,32 @@ use RDF::Redland;
 sub new {
   my ($that, %params) = @_;
   my $class = ref($that) || $that;
+
   my $scutterplan = $params{scutterplan};
   croak("No place to start, please give an arrayref with URLs as a 'scutterplan' parameter") unless (ref($scutterplan) eq 'ARRAY');
   delete $params{scutterplan};
-  unless ($params{agent}) {
+
+  # Some parameters, that should be deleted before passing them to SUPER
+  my $skip = $params{skipregexp};
+  delete $params{skipregexp};
+  my $okwait = $params{okwait} || 1;
+  delete $params{okwait};
+
+  unless ($params{agent}) { # agent is required by SUPER, set it to who I am
     $params{agent} = $class . '/' . $VERSION;
   }
+
   croak "Setting an e-mail address using the 'from' parameter is required" unless ($params{from});
+
   my $self = $class->SUPER::new(%params);
+
   foreach my $url (@{$scutterplan}) {
     $self->{QUEUE}->{$url} = ''; # Internally, QUEUE holds a hash where the keys are URLs to be visited and values are the URL they were referenced from.
   }
+
   $self->{VISITED} = {};
+  $self->{SKIP} = $skip;
+  $self->{OKWAIT} = $okwait;
 
   bless($self, $class);
   return $self;
@@ -37,12 +51,17 @@ sub scutter {
   croak "Failed to create RDF::Redland::Model for storage\n" unless $model;
 
   my $count = 0;
+
+  # -----------------------------------------------------------------
+  # Main loop starts here.
+  # Iterate over the QUEUE (which is changing as we go)
   while (my ($url, $referer) = each(%{$self->{QUEUE}})) {
     local $SIG{TERM} = sub { $model->sync; };
     next if ($self->{VISITED}->{$url}); # Then, we've been there in this run
 #    LWP::Debug::debug('Retrieving ' . $url);
+
     $count++;
-    my $uri = new RDF::Redland::URI($url);
+    my $uri = new RDF::Redland::URI($url); # Set up some basic nodes.
     my $context=new RDF::Redland::BlankNode('context'.$count);
     my $fetch=new RDF::Redland::BlankNode('fetch'.$count); # It is actually unique to this run, but will have to change later
     my $rdftype = new RDF::Redland::URI('http://www.w3.org/1999/02/22-rdf-syntax-ns#type');
@@ -62,8 +81,24 @@ sub scutter {
 			    new RDF::Redland::URINode($referer), $context);
     }
 
-    unless ($self->rules->allowed($url)) {
+    if ($self->{SKIP} and ($url =~ m/$self->{SKIP}/)) { # Support skipping per a regexp
       LWP::Debug::debug('Skipping ' . $url);
+      LWP::Debug::debug('Disallowed as per regular expression: ' . $self->{SKIP});
+      $model = $self->_error_statements(model => $model,
+					fetch => $fetch,
+					count => $count,
+					context => $context,
+					rel => 'skip',
+					message => 'Disallowed as per regular expression: ' . $self->{SKIP});
+      delete $self->{QUEUE}->{$url};
+      next;
+    }
+
+    unless ($self->rules->allowed($url)) {
+      # This is not actually likely to run, it seems, as LWP::RobotUA
+      # may not have decided yet at this point, and will throw a 403
+      # Forbidden instead.
+      LWP::Debug::debug('Skipping ' . $url); 
       LWP::Debug::debug('Disallowed as per robots.txt');
       $model = $self->_error_statements(model => $model,
 					fetch => $fetch,
@@ -71,6 +106,15 @@ sub scutter {
 					context => $context,
 					rel => 'skip',
 					message => 'Disallowed as per robots.txt');
+      delete $self->{QUEUE}->{$url};
+      next;
+    }
+
+    # TODO: Doesn't seem to work
+    if ($self->host_wait($url) > $self->{OKWAIT}) { # We can't request, and won't bother to wait.
+      LWP::Debug::debug("Do $url later.");
+      delete $self->{QUEUE}->{$url}; # Delete where we are
+      $self->{QUEUE}->{$url} = $referer; # And reinsert
       next;
     }
 
@@ -78,11 +122,11 @@ sub scutter {
     my $response = $self->get($url, 'Referer' => $referer);
 
 
-    my $fetchtime = $response->header('Date');
+    my $fetchtime = $response->header('Date'); # Get a time somehow.
     unless ($fetchtime) {
       $fetchtime = localtime;
     }
-    
+
     # More statements about the fetch we just did.
     $model->add_statement($context,
 			  new RDF::Redland::URINode('http://purl.org/net/scutter#fetch'), 
@@ -96,9 +140,13 @@ sub scutter {
     $model->add_statement($fetch,
 			  new RDF::Redland::URINode('http://purl.org/net/scutter#status'), 
 			  new RDF::Redland::LiteralNode($response->code), $context);
+
+    $self->{VISITED}->{$url} = 1;  # Been there, done that,
+    delete $self->{QUEUE}->{$url}; # one teeshirt is sufficient
+
     if ($response->is_success) {
-      $self->{VISITED}->{$url} = 1;  # Been there, done that,
-      delete $self->{QUEUE}->{$url}; # one teeshirt is sufficient
+      # W00T, we really got the document!
+
       my $parser=new RDF::Redland::Parser;
       unless ($parser) {
 	LWP::Debug::debug('Skipping ' . $url);
@@ -110,7 +158,23 @@ sub scutter {
 					  message => 'Could not create Redland parser for MIME type '.$response->header('Content-Type'));
 	next;
       }
-      my $thisdoc = $parser->parse_string_as_stream($response->decoded_content, $uri);
+
+      my $thisdoc;
+      eval { # We try to parse it
+	$thisdoc = $parser->parse_string_as_stream($response->decoded_content, $uri);
+      };
+      if ($@){
+	LWP::Debug::debug('Skipping ' . $url);
+	LWP::Debug::debug('Parser error: ' . $@);
+	LWP::Debug::conns($response->decoded_content);
+	$model = $self->_error_statements(model => $model,
+					  fetch => $fetch,
+					  count => $count,
+					  context => $context,
+					  message => 'Redland parser reported ' . $@);
+	next;
+      }
+
       unless ($thisdoc) {
 	LWP::Debug::debug('Skipping ' . $url);
 	LWP::Debug::debug('Parser returned no content.');
@@ -149,30 +213,47 @@ sub scutter {
 			      new RDF::Redland::LiteralNode($response->header('Last-Modified')), $context);
       }
 
-
+      # The query will get out the seeAlso links from the resource,
+      # which is what we'll follow
       my $query=new RDF::Redland::Query('SELECT DISTINCT ?doc WHERE { [ <http://www.w3.org/2000/01/rdf-schema#seeAlso> ?doc ] }', undef, undef, "sparql");
 
-      my $results=$query->execute($thismodel);
+      my $results;
+      eval {
+	$results = $query->execute($thismodel);
+      };
+      if ($@){
+	LWP::Debug::debug('Failed to query links, Redland reported: ' . $@);
+	LWP::Debug::conns($response->decoded_content);
+	next;
+      }
 
+      # OK, here we go through all the results and get the URLs we want.
       while(!$results->finished) {
 	for (my $i=0; $i < $results->bindings_count(); $i++) {
 	  my $value=$results->binding_value($i);
-	  my $foundurl = $value->uri->as_string;
-	  unless ($self->{VISITED}->{$foundurl}) {
-	    $self->{QUEUE}->{$foundurl} = $url;
-	    print STDERR "Adding URL: " . $foundurl ."\n";
-	  } else {
-	    delete $self->{QUEUE}->{$foundurl};
-	    LWP::Debug::debug('Has been visited, so skipping ' . $foundurl);
-	  }
+	  $self->_check_and_add($url, $value->uri->as_string);
 	}
 	$results->next_result;
       }
+ #     $model->sync; # Finally, make sure this is saved to the storage. Needed?
 
-#      my $serializer=new RDF::Redland::Serializer("ntriples");
- #     print $serializer->serialize_model_to_string(undef,$model);
- #     $model->sync; # Finally, make sure this is saved to the storage 
-      last if ($maxcount == $count);   
+
+      # If we have a maxcount, then check if we should jump out of the
+      # loop
+      last if (defined($maxcount) and ($count >= $maxcount));   
+
+    } elsif (($response->is_redirect) && ($response->header('Location'))) {
+      # Hmm, dull, just a redirect, lets add it to the queue if we
+      # haven't been there
+      $self->_check_and_add($url, $response->header('Location'));
+      $model = $self->_error_statements(model => $model,
+					fetch => $fetch,
+					count => $count,
+					context => $context,
+					rel => 'skip',
+					message => 'HTTP Redirect');
+
+
     } else { # Error situation, retrieval not OK
       $model = $self->_error_statements(model => $model,
 					fetch => $fetch,
@@ -185,6 +266,10 @@ sub scutter {
   return $model;
 }
 
+
+# This is a sub just for internal use, and it creates a few statements
+# in case of an error. It is just a shorthand really.
+# There are lots of usage examples in the code... :-)
 sub _error_statements {
   my ($self, %msg) = @_;
   my $reason=new RDF::Redland::BlankNode('reason'.$msg{count});
@@ -202,7 +287,21 @@ sub _error_statements {
   return $model;
 }
 
-
+# Internal sub, to check if we have been on an URL before, and if not,
+# add it to the QUEUE. First argument is where we are now, second is
+# the URL we're checking.
+sub _check_and_add {
+  my ($self, $thisurl, $foundurl) = @_;
+  unless ($self->{VISITED}->{$foundurl}) {
+    $self->{QUEUE}->{$foundurl} = $thisurl;
+    print STDERR "Adding URL: " . $foundurl ."\n";
+    return 1;
+  } else {
+    delete $self->{QUEUE}->{$foundurl};
+    LWP::Debug::debug('Has been visited, so skipping ' . $foundurl);
+    return 0;
+  }
+}
 
 1;
 __END__
@@ -236,9 +335,7 @@ RDF statements.
 This module is an alpha release of such a Scutter. It builds a
 L<RDF::Redland::Model>, and can add statements to any
 L<RDF::Redland::Storage> that supports contexts. Among Redland
-storages, we find file, memory, Berkeley DB, MySQL, etc, but it is not
-clear to the author which of these supports contexts, and indeed, it
-does seem like the synopsis example doesn't work.
+storages, we find file, memory, Berkeley DB, MySQL, etc.
 
 This class inherits from L<LWP::RobotUA>, which again is a
 L<LWP::UserAgent> and can therefore use all methods of these classes.
@@ -251,22 +348,26 @@ It implements most of the ScutterVocab at http://rdfweb.org/topic/ScutterVocab
 
 =head1 CAUTION
 
-This is an alpha release, and I haven't tested what it can do if left
-unsupervised, and you might want to be careful about finding
-out... The example in the Synopsis a complete scutter, but one that
-will retrieve only 30 URLs before returning. You could test it by
+This is an alpha release, and I haven't tested very thoroughly what it
+can do if left unsupervised, and you might want to be careful about
+finding out... The example in the Synopsis a complete scutter, but one
+that will retrieve only 30 URLs before returning. You could test it by
 entering your own URLs (optional) and a valid email address
 (mandatory). It'll count and report what it is doing.
 
 =head1 METHODS
 
-=head2 new(scutterplan => ARRAYREF, from => EMAILADDRESS [, any LWP::RobotUA parameters])
+=head2 new(scutterplan => ARRAYREF, from => EMAILADDRESS, [skipregexp => REGEXP, any LWP::RobotUA parameters])
 
 This is the constructor of the Scutter. You will have to initialise it
 with a C<scutterplan> argument, which is an ARRAYREF containing URLs
 pointing to RDF resources. The Scutter will start its traverse of the
 web there. You must also set a valid email address in a C<from>, so
 that if your scutter goes amok, your victims will know who to blame.
+
+You may supply a C<skipregexp> argument, containing a regular
+expression. If the regular expression matches the URL of a resource,
+the resource will be skipped.
 
 Finally, you may supply any arguments a L<LWP::RobotUA> and
 L<LWP::UserAgent> accepts.
@@ -289,6 +390,11 @@ statements retrieved from all visited resources.
 There are no known real bugs at the time of this writing, keeping in
 mind it is an alpha. If you find any, please use the CPAN Request
 Tracker to report them.
+
+However, I have tried to add some code to allow the robot to
+temporarily skip over and later revisit a resource that couldn't be
+visited at the time of initital request per robot guidelines. This
+code is in there, but is undocumented as I couldn't get it to work.
 
 I'm in it slightly over my head when I try to add the ScutterVocab
 statements. Time will show if I have understood it correctly.

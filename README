@@ -1,5 +1,5 @@
-RDF-Scutter version 0.06
-========================
+RDF-Scutter version 0.1
+=======================
 
 As the name implies, this is an RDF Scutter. A scutter is a web robot
 that follows C<seeAlso>-links, retrieves the content it finds at those
